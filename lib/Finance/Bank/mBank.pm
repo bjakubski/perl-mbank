@@ -10,15 +10,24 @@ use Crypt::SSLeay;
 use English '-no_match_vars';
 use HTML::TableExtract;
 use WWW::Mechanize;
+use Exception::Base
+    'Exception::Login',
+    'Exception::Login::Scraping'    => { isa => 'Exception::Login' },
+    'Exception::Login::Credentials' => { isa => 'Exception::Login' },
+    'Exception::HTTP'               => { isa => 'Exception::Login' },
+;
 
-__PACKAGE__->mk_accessors(
+__PACKAGE__->mk_accessors(#{{{
 qw/
     userid
     password
     _mech
     _is_logged_on
     _main_content
-/);
+    _logged_userid
+    _logged_password
+/
+);#}}}
 
 =head1 NAME
 
@@ -41,6 +50,8 @@ our $VERSION = '0.01';
         userid   => 555123,
         password => 'loremipsum'
     );
+    # There is no need to call ->login explicitly, but it is possible
+    # $mbank->login
     for my $account ($mbank->accounts) {
         print "$account->{account_name}: $account->{balance}\n";
     }
@@ -53,37 +64,67 @@ sub new {#{{{
 
     my $self = $class->SUPER::new(\%params);
 
-    $self->_mech( WWW::Mechanize->new() );
+    use Data::Dumper;
+    $self->_mech(
+        WWW::Mechanize->new(
+            autocheck       => 1,
+            onerror         => sub { Exception::HTTP->throw(message => join(q{}, @_)) },
+        )
+    );
 
     return $self;
+}#}}}
+sub login {#{{{
+    my $self = shift;
+
+    return $self->_login(@_);
 }#}}}
 sub _login {#{{{
     my $self = shift;
 
+    $self->_check_user_change;
+
     return if $self->_is_logged_on;
     
     if (!$self->userid or !$self->password) {
-        croak "No userid or password specified";
+        Exception::Login::Credentials->throw( message => "No userid or password specified" );
     }
 
     my $mech = $self->_mech;
 
     $mech->get('https://www.mbank.com.pl/');
+
+    if (!@{$mech->forms}) {
+        Exception::Login::Scraping->throw(message => 'No forms found on login page');
+    }
     
     # Login form
-    $mech->form_number(1);
+    my $form = $mech->form_number(1);
+    if (not $form->find_input('customer') or not $form->find_input('password')) {
+        Exception::Login::Scraping->throw( message => 'Wanted fields not found in form' );
+    }
     $mech->field( customer => $self->userid );
     $mech->field( password => $self->password );
     $mech->submit;
     
-    
     # Choose frame
-    $mech->follow_link( name => "FunctionFrame" );
+    $mech->follow_link( name => "FunctionFrame" ) or Exception::Login::Scraping->throw(message => 'No FunctionFrame was found');
     
-    croak "Login failed!"
-        if $mech->content !~ /Dost.pne rachunki/;
+    if ($mech->content =~ /Nieprawid.owy identyfikator/) {
+        Exception::Login::Credentials->throw( message => 'Invalid userid or password');
+    }
+    if ($mech->content =~ /B..d logowania/) {
+        Exception::Login->throw( message => 'Unknown login error');
+    }
+    if ($mech->content !~ /Dost.pne rachunki/) {
+        Exception::Login->throw( message => 'Unknown error')
+    }
 
     $self->_main_content( $mech->content );
+    $self->_logged_userid( $self->userid );
+    $self->_logged_password( $self->password );
+    $self->_is_logged_on(1);
+
 
 }#}}}
 sub accounts {#{{{
@@ -99,15 +140,47 @@ sub __extract_accounts {#{{{
     my $te = new HTML::TableExtract( depth => 1, count => 0 );
     $te->parse($content);
 
-    my $ts = $te->first_table_state_found();
+    my $ts = $te->first_table_found();
+    if (not defined $ts) {
+        Exception::Login::Scraping->throw(message => q{Couldn't find table to parse});
+    }
 
-    my @accounts;
+    my @accounts = ();
     for my $row ($ts->rows) {
-        next if $row->[5] !~ /\d+/;
+        next if not defined $row->[5] or $row->[5] !~ /\d+/;
         $row->[1] =~ s/\n/ /g;
-        push @accounts, {account_name => $row->[1], balance => $row->[5], available => $row->[7]};
+        push @accounts, {
+            account_name    => $row->[1],
+            balance         => __process_money_amount( $row->[5] ),
+            available       => __process_money_amount( $row->[7] ),
+        };
     }
     return @accounts;
+}#}}}
+sub _check_user_change {#{{{
+    my $self = shift;
+
+    return if !$self->_is_logged_on;
+
+    if ( ($self->userid ne $self->_logged_userid) or ($self->password ne $self->_logged_password) ) {
+        $self->logout;
+    }
+}#}}}
+sub logout {#{{{
+    my $self = shift;
+    
+    $self->_is_logged_on(0);
+    $self->_mech->get('https://www.mbank.com.pl/logout.aspx');
+}#}}}
+sub __process_money_amount {#{{{
+    my $val = shift;
+
+    return undef if not defined $val;
+
+    $val =~ s/,/./;
+    $val =~ s/\s//g;
+
+    return $val;
 }#}}}
 
 =head1 AUTHOR
