@@ -1,5 +1,7 @@
 package Finance::Bank::mBank;
 
+our $VERSION = '0.01';
+
 use warnings;
 use strict;
 
