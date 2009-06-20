@@ -1,6 +1,6 @@
 package Finance::Bank::mBank;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use warnings;
 use strict;
@@ -10,7 +10,7 @@ use base 'Class::Accessor';
 use Carp;
 use Crypt::SSLeay;
 use English '-no_match_vars';
-use HTML::TableExtract;
+use Web::Scraper;
 use WWW::Mechanize;
 use Exception::Base
     'Exception::Login',
@@ -37,11 +37,9 @@ Finance::Bank::mBank - Check mBank account balance
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
-
-our $VERSION = '0.01';
 
 =head1 SYNOPSIS
 
@@ -110,7 +108,7 @@ sub _login {#{{{
     $mech->submit;
     
     # Choose frame
-    $mech->follow_link( name => "FunctionFrame" ) or Exception::Login::Scraping->throw(message => 'No FunctionFrame was found');
+    $mech->follow_link( name => "MainFrame" ) or Exception::Login::Scraping->throw(message => 'No FunctionFrame was found');
     
     if ($mech->content =~ /Nieprawid.owy identyfikator/) {
         Exception::Login::Credentials->throw( message => 'Invalid userid or password');
@@ -139,25 +137,29 @@ sub accounts {#{{{
 sub __extract_accounts {#{{{
     my $content = shift;
 
-    my $te = new HTML::TableExtract( depth => 1, count => 0 );
-    $te->parse($content);
+    my $account_scrap = scraper {
+        process 'p.Account',            account_name    => 'TEXT';
+        process 'p.Amount',             balance         => 'TEXT';
+        process 'p.Amount + p.Amount',  available       => 'TEXT';
+    };
 
-    my $ts = $te->first_table_found();
-    if (not defined $ts) {
-        Exception::Login::Scraping->throw(message => q{Couldn't find table to parse});
+    my $account_list_scrap = scraper {
+        process '#AccountsGrid li',
+            'accounts[]'        => $account_scrap;
+        result 'accounts';
+    };
+    my $accounts = $account_list_scrap->scrape( $content );
+
+    shift @{ $accounts }; # header row
+    pop @{ $accounts }; # summary row
+
+    for my $account ( @{$accounts} ) {
+        $account->{balance}     = __process_money_amount( $account->{balance} );
+        $account->{available}   = __process_money_amount( $account->{available} );
     }
 
-    my @accounts = ();
-    for my $row ($ts->rows) {
-        next if not defined $row->[5] or $row->[5] !~ /\d+/;
-        $row->[1] =~ s/\n/ /g;
-        push @accounts, {
-            account_name    => $row->[1],
-            balance         => __process_money_amount( $row->[5] ),
-            available       => __process_money_amount( $row->[7] ),
-        };
-    }
-    return @accounts;
+    return @{ $accounts };
+
 }#}}}
 sub _check_user_change {#{{{
     my $self = shift;
