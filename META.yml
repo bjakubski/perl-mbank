@@ -19,6 +19,7 @@ no_index:
     - inc
     - t
 requires:
+  Class::Accessor: 0
   Crypt::SSLeay: 0
   Exception::Base: 0
   WWW::Mechanize: 0
