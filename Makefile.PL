@@ -7,7 +7,7 @@ license  'perl';
 
 build_requires 'Test::More';
 requires 'Crypt::SSLeay';
-requires 'Class::Accesor';
+requires 'Class::Accessor';
 requires 'Web::Scraper';
 requires 'WWW::Mechanize';
 requires 'Exception::Base';
